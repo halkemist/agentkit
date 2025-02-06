@@ -8,6 +8,7 @@ import {
   cdpWalletActionProvider,
   pythActionProvider,
 } from "@coinbase/agentkit";
+import { transactionAnalysisProvider } from "./providers/TransactionAnalysisProvider";
 import { getLangChainTools } from "@coinbase/agentkit-langchain";
 import { HumanMessage } from "@langchain/core/messages";
 import { MemorySaver } from "@langchain/langgraph";
@@ -107,6 +108,10 @@ async function initializeAgent() {
           apiKeyName: process.env.CDP_API_KEY_NAME,
           apiKeyPrivateKey: process.env.CDP_API_KEY_PRIVATE_KEY?.replace(/\\n/g, "\n"),
         }),
+        transactionAnalysisProvider({
+          networkId: "base-mainnet",
+          cacheEnabled: true
+        })
       ],
     });
 
