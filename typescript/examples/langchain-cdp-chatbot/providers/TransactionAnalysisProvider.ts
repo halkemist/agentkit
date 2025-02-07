@@ -4,18 +4,11 @@ import { ActionProvider } from "@coinbase/agentkit";
 import { Network } from '@coinbase/agentkit';
 import { ethers } from 'ethers';
 
-// Types
+// Types (txs)
 interface TransactionRisk {
   riskLevel: 'safe' | 'warning' | 'danger';
   reason: string;
   recommendation: string;
-}
-
-interface TransactionMetrics {
-  uniqueContracts: number;
-  defiInteractions: number;
-  successRate: number;
-  complexityScore: number;
 }
 
 interface TransactionConfig {
@@ -23,6 +16,31 @@ interface TransactionConfig {
   rpcUrl: string;
   scamDatabaseUrl?: string;
   supportedNetworks?: Network[];
+}
+
+// Types (user level)
+interface UserProgress {
+  address: string;
+  xp: number;
+  level: number;
+  transactionsAnalyzed: number;
+  lastUpdate: number;
+  achievements: Achievement[];
+}
+
+interface Achievement {
+  id: string;
+  name: string;
+  description: string;
+  xpReward: number;
+  dateUnlocked: number;
+}
+
+interface XPEvent {
+  action: string;
+  baseXP: number;
+  multiplier: number;
+  description: string;
 }
 
 // Schemas
@@ -37,18 +55,14 @@ const AnalyzeTransactionSchema = z.object({
   isNewTransaction: z.boolean().describe("Whether this is a new transaction that just occurred")
 });
 
-const AssessLevelProgressSchema = z.object({
+const UpdateUserProgressSchema = z.object({
   userAddress: z.string(),
-  currentLevel: z.number().min(1).max(100),
-  recentTransactions: z.array(z.object({
-    hash: z.string(),
-    to: z.string(),
-    from: z.string(),
-    value: z.string(),
-    data: z.string(),
-    status: z.boolean(),
-    gasUsed: z.string()
-  }))
+  action: z.enum(['TRANSACTION_ANALYZED', 'SAFE_TRANSACTION', 'COMPLEX_INTERACTION', 'FIRST_DEFI', 'ACHIEVEMENT_UNLOCKED']),
+  context: z.object({
+    transactionHash: z.string().optional(),
+    achievementId: z.string().optional(),
+    complexity: z.number().optional(),
+  }).optional(),
 });
 
 /**
@@ -60,6 +74,19 @@ export class TransactionAnalysisProvider extends ActionProvider {
   private readonly provider: ethers.JsonRpcProvider;
   private readonly scamDatabaseUrl?: string;
   private readonly supportedNetworks: Network[];
+
+  // Level variables
+  private readonly XP_ACTIONS: Record<string, XPEvent> = {
+    TRANSACTION_ANALYZED: { action: 'Transaction Analysis', baseXP: 10, multiplier: 1, description: 'Analyzed a transaction' },
+    SAFE_TRANSACTION: { action: 'Safe Transaction', baseXP: 20, multiplier: 1.2, description: 'Completed a safe transaction' },
+    COMPLEX_INTERACTION: { action: 'Complex Interaction', baseXP: 30, multiplier: 1.5, description: 'Handled complex contract interaction' },
+    FIRST_DEFI: { action: 'DeFi Pioneer', baseXP: 50, multiplier: 2, description: 'First DeFi interaction' },
+    ACHIEVEMENT_UNLOCKED: { action: 'Achievement', baseXP: 100, multiplier: 1, description: 'Unlocked new achievement' },
+  };
+  private readonly LEVEL_THRESHOLDS = {
+    calculateXPForLevel: (level: number) => Math.floor(100 * Math.pow(1.5, level - 1)),
+    getMaxLevel: () => 100
+  };
 
   constructor(config: TransactionConfig) {
     super("enhanced_transaction_analysis", []);
@@ -222,23 +249,23 @@ export class TransactionAnalysisProvider extends ActionProvider {
     receipt: ethers.TransactionReceipt
   ): Promise<TransactionRisk> {
     try {
-      // Convertir la valeur en ETH pour une meilleure lisibilité
+      // Convert to ETH because more readable
       const valueInEth = Number(ethers.formatEther(tx.value));
       const gasUsed = receipt.gasUsed;
       const gasLimit = tx.gasLimit;
   
-      // Facteurs de risque
+      // Risk factors
       const riskFactors = {
         highValue: valueInEth > 1, // Transaction > 1 ETH
-        unusualGas: gasUsed > (gasLimit * BigInt(8)) / BigInt(10), // Utilisation de plus de 80% du gas limit
+        unusualGas: gasUsed > (gasLimit * BigInt(8)) / BigInt(10), // Use of more than 80% of gas limit
         newContract: tx.to ? !(await this.isVerifiedContract(tx.to)) : true,
         knownScam: tx.to ? await this.checkAgainstScamDatabase(tx.to) : false,
         failedTx: receipt.status === 0,
-        complexData: tx.data && tx.data.length > 138, // Data complexe (plus que simple transfer)
+        complexData: tx.data && tx.data.length > 138, // Complex data (simple than transfer)
         highGasPrice: tx.gasPrice > ethers.parseUnits("100", "gwei") // Gas price > 100 gwei
       };
   
-      // Analyse des risques critiques
+      // Annalyze critical risks
       if (riskFactors.knownScam) {
         return {
           riskLevel: 'danger',
@@ -255,7 +282,7 @@ export class TransactionAnalysisProvider extends ActionProvider {
         };
       }
   
-      // Analyse des risques combinés
+      // Analyze combined risks
       if (riskFactors.highValue && riskFactors.newContract) {
         return {
           riskLevel: 'danger',
@@ -280,7 +307,7 @@ export class TransactionAnalysisProvider extends ActionProvider {
         };
       }
   
-      // Transaction standard
+      // Standard transaction
       return {
         riskLevel: 'safe',
         reason: '✅ Transaction standard sans risques particuliers détectés',
@@ -307,7 +334,7 @@ export class TransactionAnalysisProvider extends ActionProvider {
       const gasCostInEth = gasCost ? ethers.formatEther(gasCost) : '0';
       const txType = this.determineTransactionType(tx);
   
-      // Niveau débutant (1-20)
+      // Beginner level (1-20)
       if (userLevel <= 20) {
         let explanation = `
           📝 Explication Simple:
@@ -325,7 +352,7 @@ export class TransactionAnalysisProvider extends ActionProvider {
         return explanation;
       }
   
-      // Niveau intermédiaire (21-60)
+      // Intermediate level (21-60)
       if (userLevel <= 60) {
         let explanation = `
           🔍 Détails de la Transaction:
@@ -342,7 +369,7 @@ export class TransactionAnalysisProvider extends ActionProvider {
         return explanation;
       }
   
-      // Niveau avancé (61-100)
+      // Advanced level (61-100)
       return `
         🔬 Analyse Technique Détaillée:
         
@@ -371,6 +398,125 @@ export class TransactionAnalysisProvider extends ActionProvider {
       console.error('Error generating explanation:', error);
       return 'Désolé, une erreur est survenue lors de la génération de l\'explication.';
     }
+  }
+
+  @CreateAction({
+    name: "update_user_progress",
+    description: "Updates user XP and level based on their actions",
+    schema: UpdateUserProgressSchema
+  })
+  async updateUserProgress(args: z.infer<typeof UpdateUserProgressSchema>): Promise<UserProgress> {
+    const { userAddress, action, context } = args;
+    const userProgress = await this.getUserProgress(userAddress);
+    
+    // Calc earned xp
+    const xpGained = this.calculateXPGain(action, context);
+    
+    // Update xp and lvl
+    userProgress.xp += xpGained;
+    userProgress.transactionsAnalyzed += 1;
+    
+    // Check level up
+    const newLevel = this.calculateLevel(userProgress.xp);
+    const leveledUp = newLevel > userProgress.level;
+    userProgress.level = newLevel;
+
+    // Check achievements
+    const newAchievements = await this.checkAchievements(userProgress, context);
+    userProgress.achievements.push(...newAchievements);
+
+    // Save user progress
+    await this.saveUserProgress(userProgress); // TODO : function to save in smart contract
+
+    return userProgress;
+  }
+
+  private async getUserProgress(address: string): Promise<UserProgress> {
+    // TODO: get user data from smart contract
+
+    return {
+      address,
+      xp: 0,
+      level: 1,
+      transactionsAnalyzed: 0,
+      lastUpdate: Date.now(),
+      achievements: []
+    };
+  }
+
+  private calculateXPGain(action: string, context?: any): number {
+    const xpEvent = this.XP_ACTIONS[action];
+    if (!xpEvent) return 0;
+
+    let multiplier = xpEvent.multiplier;
+
+    // Complexity bonus
+    if (context?.complexity) {
+      multiplier *= (1 + context.complexity / 10);
+    }
+
+    return Math.floor(xpEvent.baseXP * multiplier);
+  }
+
+  private calculateLevel(xp: number): number {
+    let level = 1;
+    while (level < this.LEVEL_THRESHOLDS.getMaxLevel()) {
+      const requiredXP = this.LEVEL_THRESHOLDS.calculateXPForLevel(level + 1);
+      if (xp < requiredXP) break;
+      level++;
+    }
+    return level;
+  }
+
+  private async checkAchievements(progress: UserProgress, context?: any): Promise<Achievement[]> {
+    const newAchievements: Achievement[] = [];
+
+    // Achievement example
+    if (progress.transactionsAnalyzed === 1) {
+      newAchievements.push({
+        id: 'FIRST_ANALYSIS',
+        name: 'First Steps',
+        description: 'Analyzed your first transaction',
+        xpReward: 100,
+        dateUnlocked: Date.now()
+      });
+    }
+
+    // TODO: add others achievements conditions here
+
+    return newAchievements;
+  }
+
+  async analyzeTransaction(args: z.infer<typeof AnalyzeTransactionSchema>): Promise<string> {
+    const result = await super.analyzeTransaction(args);
+    
+    // Update user progression
+    await this.updateUserProgress({
+      userAddress: args.userAddress,
+      action: 'TRANSACTION_ANALYZED',
+      context: {
+        transactionHash: args.txHash,
+        complexity: this.calculateTransactionComplexity(args.txHash)
+      }
+    });
+
+    return result;
+  }
+
+  private async calculateTransactionComplexity(txHash: string): Promise<number> {
+    const tx = await this.provider.getTransaction(txHash);
+    let complexity = 0;
+    
+    if (tx) {
+      // Data complexity
+      complexity += tx.data && tx.data !== '0x' ? 2 : 0;
+      // Value complexity
+      complexity += tx.value > ethers.parseEther('1') ? 2 : 1;
+      // Gas complexity
+      complexity += tx.gasLimit > ethers.parseUnits('100000', 'wei') ? 2 : 1;
+    }
+
+    return complexity;
   }
 
 }
