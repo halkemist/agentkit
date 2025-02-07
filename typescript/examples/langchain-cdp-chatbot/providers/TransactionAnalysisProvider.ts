@@ -16,6 +16,7 @@ interface TransactionConfig {
   rpcUrl: string;
   scamDatabaseUrl?: string;
   supportedNetworks?: Network[];
+  cacheEnabled?: boolean;
 }
 
 // Types (user level)
@@ -74,6 +75,7 @@ export class TransactionAnalysisProvider extends ActionProvider {
   private readonly provider: ethers.JsonRpcProvider;
   private readonly scamDatabaseUrl?: string;
   private readonly supportedNetworks: Network[];
+  private readonly cacheEnabled: boolean;
 
   // Level variables
   private readonly XP_ACTIONS: Record<string, XPEvent> = {
@@ -97,15 +99,16 @@ export class TransactionAnalysisProvider extends ActionProvider {
     this.supportedNetworks = config.supportedNetworks || [
       { 
           protocolFamily: 'base',
-          networkId: 'mainnet',
+          networkId: 'base-mainnet',
           chainId: '8453'
       },
       {
           protocolFamily: 'base',
-          networkId: 'goerli',
+          networkId: 'base-goerli',
           chainId: '84531'
       }
     ];
+    this.cacheEnabled = config.cacheEnabled ?? false;
   }
 
   supportsNetwork(network: Network): boolean {
@@ -170,33 +173,42 @@ export class TransactionAnalysisProvider extends ActionProvider {
   }
 
   @CreateAction({
-    name: "analyze_transaction",
-    description: "Analyzes a specific transaction with user-level-appropriate explanations",
-    schema: AnalyzeTransactionSchema
+      name: "analyze_transaction",
+      description: "Analyzes a specific transaction with user-level-appropriate explanations",
+      schema: AnalyzeTransactionSchema
   })
-
   async analyzeTransaction(args: z.infer<typeof AnalyzeTransactionSchema>): Promise<string> {
     const { txHash, userLevel, isNewTransaction } = args;
 
     try {
-      const tx = await this.provider.getTransaction(txHash);
-      if (!tx) throw new Error('Transaction not found');
+        const tx = await this.provider.getTransaction(txHash);
+        if (!tx) throw new Error('Transaction not found');
 
-      const receipt = await this.provider.getTransactionReceipt(txHash);
-      if (!receipt) throw new Error('Transaction receipt not found');
+        const receipt = await this.provider.getTransactionReceipt(txHash);
+        if (!receipt) throw new Error('Transaction receipt not found');
 
-      const riskAnalysis = await this.assessTransactionRisk(tx, receipt);
-      const explanation = await this.generateLevelAppropriateExplanation(tx, receipt, userLevel);
-      
-      return `
-        ${isNewTransaction ? '🆕 New Transaction Detected!' : 'Transaction Analysis:'}
+        const riskAnalysis = await this.assessTransactionRisk(tx, receipt);
+        const explanation = await this.generateLevelAppropriateExplanation(tx, receipt, userLevel);
         
-        ${explanation}
-        
-        ${this.formatRiskAlert(riskAnalysis)}
-      `;
+        // Update user progression
+        await this.updateUserProgress({
+            userAddress: tx.from, // Utilise l'adresse de l'émetteur de la transaction
+            action: 'TRANSACTION_ANALYZED',
+            context: {
+                transactionHash: txHash,
+                complexity: await this.calculateTransactionComplexity(txHash)
+            }
+        });
+
+        return `
+            ${isNewTransaction ? '🆕 New Transaction Detected!' : 'Transaction Analysis:'}
+            
+            ${explanation}
+            
+            ${this.formatRiskAlert(riskAnalysis)}
+        `;
     } catch (error) {
-      return `Error analyzing transaction: ${error instanceof Error ? error.message : 'Unknown error'}`;
+        return `Error analyzing transaction: ${error instanceof Error ? error.message : 'Unknown error'}`;
     }
   }
 
@@ -487,22 +499,6 @@ export class TransactionAnalysisProvider extends ActionProvider {
     return newAchievements;
   }
 
-  async analyzeTransaction(args: z.infer<typeof AnalyzeTransactionSchema>): Promise<string> {
-    const result = await super.analyzeTransaction(args);
-    
-    // Update user progression
-    await this.updateUserProgress({
-      userAddress: args.userAddress,
-      action: 'TRANSACTION_ANALYZED',
-      context: {
-        transactionHash: args.txHash,
-        complexity: this.calculateTransactionComplexity(args.txHash)
-      }
-    });
-
-    return result;
-  }
-
   private async calculateTransactionComplexity(txHash: string): Promise<number> {
     const tx = await this.provider.getTransaction(txHash);
     let complexity = 0;
@@ -528,7 +524,7 @@ export const transactionAnalysisProvider = (config: Partial<TransactionConfig> =
     scamDatabaseUrl: process.env.SCAM_DATABASE_URL,
     supportedNetworks: [{
       protocolFamily: 'base',
-      networkId: 'mainnet',
+      networkId: 'base-mainnet',
       chainId: '8453'
     }]
   };

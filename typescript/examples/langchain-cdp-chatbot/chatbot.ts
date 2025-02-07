@@ -109,8 +109,8 @@ async function initializeAgent() {
           apiKeyPrivateKey: process.env.CDP_API_KEY_PRIVATE_KEY?.replace(/\\n/g, "\n"),
         }),
         transactionAnalysisProvider({
-          networkId: "base-mainnet",
-          cacheEnabled: true
+          cacheEnabled: true,
+          basescanApiKey: process.env.BASESCAN_API_KEY
         })
       ],
     });
