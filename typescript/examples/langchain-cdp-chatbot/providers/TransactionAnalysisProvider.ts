@@ -16,7 +16,8 @@ interface TransactionConfig {
   rpcUrl: string;
   scamDatabaseUrl?: string;
   supportedNetworks?: Network[];
-  cacheEnabled?: boolean;
+  apiUrl?: string,
+  apiKey?: any
 }
 
 // Types (user level)
@@ -75,7 +76,8 @@ export class TransactionAnalysisProvider extends ActionProvider {
   private readonly provider: ethers.JsonRpcProvider;
   private readonly scamDatabaseUrl?: string;
   private readonly supportedNetworks: Network[];
-  private readonly cacheEnabled: boolean;
+  private readonly apiUrl: string;
+  private readonly apiKey: string;
 
   // Level variables
   private readonly XP_ACTIONS: Record<string, XPEvent> = {
@@ -101,14 +103,10 @@ export class TransactionAnalysisProvider extends ActionProvider {
           protocolFamily: 'base',
           networkId: 'base-mainnet',
           chainId: '8453'
-      },
-      {
-          protocolFamily: 'base',
-          networkId: 'base-goerli',
-          chainId: '84531'
       }
     ];
-    this.cacheEnabled = config.cacheEnabled ?? false;
+    this.apiUrl = config.apiUrl || 'http://localhost:3000';
+    this.apiKey = config.apiKey;
   }
 
   supportsNetwork(network: Network): boolean {
@@ -438,22 +436,29 @@ export class TransactionAnalysisProvider extends ActionProvider {
     userProgress.achievements.push(...newAchievements);
 
     // Save user progress
-    await this.saveUserProgress(userProgress); // TODO : function to save in smart contract
+    await this.saveUserProgress(userProgress);
 
     return userProgress;
   }
 
-  private async getUserProgress(address: string): Promise<UserProgress> {
-    // TODO: get user data from smart contract
+  private async saveUserProgress(progress: UserProgress): Promise<void> {
+    await fetch(`${this.apiUrl}/progress`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.apiKey
+      },
+      body: JSON.stringify(progress)
+    });
+  }
 
-    return {
-      address,
-      xp: 0,
-      level: 1,
-      transactionsAnalyzed: 0,
-      lastUpdate: Date.now(),
-      achievements: []
-    };
+  private async getUserProgress(address: string): Promise<UserProgress> {
+    const response = await fetch(`${this.apiUrl}/progress/${address}`, {
+      headers: {
+        'x-api-key': this.apiKey
+      }
+    });
+    return response.json();
   }
 
   private calculateXPGain(action: string, context?: any): number {

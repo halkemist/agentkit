@@ -109,8 +109,9 @@ async function initializeAgent() {
           apiKeyPrivateKey: process.env.CDP_API_KEY_PRIVATE_KEY?.replace(/\\n/g, "\n"),
         }),
         transactionAnalysisProvider({
-          cacheEnabled: true,
-          basescanApiKey: process.env.BASESCAN_API_KEY
+          basescanApiKey: process.env.BASESCAN_API_KEY,
+          apiKey: process.env.BACKEND_API_KEY,
+          apiUrl: process.env.BACKEND_API_URL
         })
       ],
     });
