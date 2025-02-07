@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { CreateAction } from "@coinbase/agentkit";
 import { ActionProvider } from "@coinbase/agentkit";
-import { Network } from "@coinbase/agentkit";
+import { Network } from '@coinbase/agentkit';
 import { ethers } from 'ethers';
 
 // Types
@@ -18,18 +18,12 @@ interface TransactionMetrics {
   complexityScore: number;
 }
 
-interface ProgressMetrics extends TransactionMetrics {
-  totalTransactions: number;
-  averageGasUsed: string;
-}
-
 interface TransactionConfig {
   basescanApiKey: string;
   rpcUrl: string;
   scamDatabaseUrl?: string;
-  supportedNetworks?: string[];
+  supportedNetworks?: Network[];
 }
-
 
 // Schemas
 const MonitorAddressSchema = z.object({
@@ -63,9 +57,9 @@ const AssessLevelProgressSchema = z.object({
 export class TransactionAnalysisProvider extends ActionProvider {
   private lastKnownTx: Record<string, string>;
   private readonly basescanApiKey: string;
-  private readonly provider: ethers.JsonRpcProvider(config.rpcUrl);
+  private readonly provider: ethers.JsonRpcProvider;
   private readonly scamDatabaseUrl?: string;
-  private readonly supportedNetworks: string[];
+  private readonly supportedNetworks: Network[];
 
   constructor(config: TransactionConfig) {
     super("enhanced_transaction_analysis", []);
@@ -73,21 +67,47 @@ export class TransactionAnalysisProvider extends ActionProvider {
     this.basescanApiKey = config.basescanApiKey;
     this.provider = new ethers.JsonRpcProvider(config.rpcUrl);
     this.scamDatabaseUrl = config.scamDatabaseUrl;
-    this.supportedNetworks = config.supportedNetworks || ['base-mainnet', 'base-goerli'];
-    this.rpcUrl = config.rpcUrl;
+    this.supportedNetworks = config.supportedNetworks || [
+      { 
+          protocolFamily: 'base',
+          networkId: 'mainnet',
+          chainId: '8453'
+      },
+      {
+          protocolFamily: 'base',
+          networkId: 'goerli',
+          chainId: '84531'
+      }
+    ];
   }
 
-  supportsNetwork(networkId: Network): boolean {
-    return this.supportedNetworks.includes(networkId);
+  supportsNetwork(network: Network): boolean {
+    return this.supportedNetworks.some(supported => 
+      supported.protocolFamily === network.protocolFamily &&
+      supported.networkId === network.networkId &&
+      supported.chainId === network.chainId
+    );
   }
 
   private async getLatestTransaction(address: string): Promise<ethers.TransactionResponse | null> {
     try {
-      const history = await this.provider.getHistory(address);
-      return history.length > 0 ? history[0] : null;
+        // Use API go get address tx history
+        const baseUrl = "https://api.basescan.org/api";
+        const response = await fetch(
+            `${baseUrl}?module=account&action=txlist&address=${address}&sort=desc&apikey=${this.basescanApiKey}&limit=1`
+        );
+        
+        const data = await response.json();
+        
+        if (data.status === "1" && data.result.length > 0) {
+            const tx = await this.provider.getTransaction(data.result[0].hash);
+            return tx;
+        }
+        
+        return null;
     } catch (error) {
-      console.error('Error fetching latest transaction:', error);
-      return null;
+        console.error('Error fetching latest transaction:', error);
+        return null;
     }
   }
 
@@ -127,6 +147,7 @@ export class TransactionAnalysisProvider extends ActionProvider {
     description: "Analyzes a specific transaction with user-level-appropriate explanations",
     schema: AnalyzeTransactionSchema
   })
+
   async analyzeTransaction(args: z.infer<typeof AnalyzeTransactionSchema>): Promise<string> {
     const { txHash, userLevel, isNewTransaction } = args;
 
@@ -182,7 +203,7 @@ export class TransactionAnalysisProvider extends ActionProvider {
     return 'Contract Interaction';
   }
 
-  private formatEvents(logs: ethers.Log[]): string {
+  private formatEvents(logs: readonly ethers.Log[] | ethers.Log[]): string {
     return logs.map((log, index) => `Event ${index + 1}: ${log.topics[0]}`).join('\n');
   }
 
@@ -194,40 +215,6 @@ export class TransactionAnalysisProvider extends ActionProvider {
       
       Recommendation: ${risk.recommendation}
     `;
-  }
-
-  private calculateComplexityScore(transactions: z.infer<typeof AssessLevelProgressSchema>['recentTransactions']): number {
-    return transactions.reduce((score, tx) => {
-      score += tx.data !== '0x' ? 2 : 1; // Contract interactions worth more
-      score += Number(tx.value) > 0 ? 1 : 0; // Value transfers add points
-      return score;
-    }, 0);
-  }
-
-  private calculateProgressPercentage(metrics: TransactionMetrics): number {
-    const maxScore = 100;
-    const currentScore = (
-      (metrics.uniqueContracts * 10) +
-      (metrics.defiInteractions * 15) +
-      (metrics.successRate * 25) +
-      (metrics.complexityScore * 5)
-    );
-    return Math.min(Math.round((currentScore / maxScore) * 100), 100);
-  }
-
-  private generateLevelUpReason(metrics: ProgressMetrics): string {
-    const reasons: string[] = [];
-    
-    if (metrics.uniqueContracts > 5) 
-      reasons.push('Diverse contract interactions');
-    if (metrics.defiInteractions > 10) 
-      reasons.push('Active DeFi participation');
-    if (metrics.successRate > 0.9) 
-      reasons.push('High transaction success rate');
-    if (metrics.complexityScore > 50) 
-      reasons.push('Complex transaction handling');
-
-    return reasons.join(', ');
   }
 
   private async assessTransactionRisk(
@@ -393,7 +380,11 @@ export const transactionAnalysisProvider = (config: Partial<TransactionConfig> =
     basescanApiKey: process.env.BASESCAN_API_KEY || '',
     rpcUrl: process.env.BASE_RPC_URL || 'https://mainnet.base.org',
     scamDatabaseUrl: process.env.SCAM_DATABASE_URL,
-    supportedNetworks: ['base-mainnet', 'base-goerli']
+    supportedNetworks: [{
+      protocolFamily: 'base',
+      networkId: 'mainnet',
+      chainId: '8453'
+    }]
   };
 
   return new TransactionAnalysisProvider({
