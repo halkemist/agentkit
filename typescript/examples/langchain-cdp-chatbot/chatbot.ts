@@ -67,7 +67,9 @@ async function initializeAgent() {
   try {
     // Initialize LLM
     const llm = new ChatOpenAI({
-      model: "gpt-3.5-turbo",
+      model: "gpt-4o-mini",
+      temperature: 0.7,
+      maxRetries: 3,
     });
 
     let walletDataStr: string | null = null;
@@ -92,8 +94,6 @@ async function initializeAgent() {
 
     const walletProvider = await CdpWalletProvider.configureWithWallet(config);
 
-    let transactionAnalysisProviderInstance: any;
-
     // Initialize AgentKit
     const agentkit = await AgentKit.from({
       walletProvider,
@@ -110,12 +110,12 @@ async function initializeAgent() {
           apiKeyName: process.env.CDP_API_KEY_NAME,
           apiKeyPrivateKey: process.env.CDP_API_KEY_PRIVATE_KEY?.replace(/\\n/g, "\n"),
         }),
-        (transactionAnalysisProviderInstance = transactionAnalysisProvider({
+        transactionAnalysisProvider({
           basescanApiKey: process.env.BASESCAN_API_KEY,
           rpcUrl: process.env.BASE_RPC_URL,
           apiKey: process.env.BACKEND_API_KEY,
           apiUrl: process.env.BACKEND_API_URL,
-        }))
+        })
       ],
     });
 
@@ -160,10 +160,6 @@ async function initializeAgent() {
         Be concise yet informative based on user level.
         `,
     });
-
-    if (transactionAnalysisProviderInstance.setAgent) {
-      transactionAnalysisProviderInstance.setAgent(agent);
-    }
 
     // Save wallet data
     const exportedWallet = await walletProvider.exportWallet();

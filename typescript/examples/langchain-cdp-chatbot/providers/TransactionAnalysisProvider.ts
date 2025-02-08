@@ -3,6 +3,8 @@ import { CreateAction } from "@coinbase/agentkit";
 import { ActionProvider } from "@coinbase/agentkit";
 import { Network } from '@coinbase/agentkit';
 import { ethers } from 'ethers';
+import { ChatOpenAI } from "@langchain/openai";
+import { SystemMessage, HumanMessage } from "@langchain/core/messages";
 
 // Types (txs)
 interface TransactionRisk {
@@ -76,7 +78,7 @@ export class TransactionAnalysisProvider extends ActionProvider {
   private readonly supportedNetworks: Network[];
   private readonly apiUrl: string;
   private readonly apiKey: string;
-  private agent: any = null;
+  private llm?: ChatOpenAI;
 
   // Level variables
   private readonly XP_ACTIONS: Record<string, XPEvent> = {
@@ -107,8 +109,8 @@ export class TransactionAnalysisProvider extends ActionProvider {
     this.apiKey = config.apiKey;
   }
 
-  setAgent(newAgent: any): void {
-    this.agent = newAgent;
+  public setLLM(llm: ChatOpenAI) {
+    this.llm = llm;
   }
 
   supportsNetwork(network: Network): boolean {
@@ -336,85 +338,75 @@ export class TransactionAnalysisProvider extends ActionProvider {
     userLevel: number,
   ): Promise<string> {
     try {
+        if (!this.llm) {
+            throw new Error("LLM not initialized");
+        }
 
-      if (!this.agent) {
-        throw new Error("Agent not initialized");
-      }
+        // Prepare transaction data
+        const txData = {
+            value: ethers.formatEther(tx.value),
+            gasCost: ethers.formatEther(tx.gasPrice * receipt.gasUsed),
+            status: receipt.status,
+            to: tx.to,
+            from: tx.from,
+            hash: tx.hash,
+            input: tx.data,
+            gasUsed: receipt.gasUsed.toString(),
+            events: receipt.logs,
+            type: this.determineTransactionType(tx),
+            blockNumber: tx.blockNumber,
+            gasPrice: tx.gasPrice.toString(),
+            methodId: tx.data.slice(0, 10),
+            nonce: tx.nonce,
+            success: receipt.status === 1,
+            eventCount: receipt.logs.length
+        };
 
-      // Prepare transaction data
-      const txData = {
-        value: ethers.formatEther(tx.value),
-        gasCost: ethers.formatEther(tx.gasPrice * receipt.gasUsed),
-        status: receipt.status,
-        to: tx.to,
-        from: tx.from,
-        hash: tx.hash,
-        input: tx.data,
-        gasUsed: receipt.gasUsed.toString(),
-        events: receipt.logs,
-        type: this.determineTransactionType(tx)
-      };
-  
-      // Define personality based on level
-      let personality;
-      if (userLevel <= 20) {
-        personality = `
-          You are a friendly and reassuring blockchain guide who explains things simply.
-          - Use simple and accessible metaphors
-          - Avoid technical jargon
-          - Stay positive and encouraging
-          - Explain as if to a friend discovering blockchain
-          - Focus on essential outcomes
-        `;
-      } else if (userLevel <= 60) {
-        personality = `
-          You are a pragmatic technical mentor.
-          - Balance technical details and accessibility
-          - Provide practical explanations
-          - Make connections with familiar concepts
-          - Give basic optimization tips
-          - Highlight important technical aspects
-        `;
-      } else {
-        personality = `
-          You are a sharp technical expert speaking to another expert.
-          - Dive into technical details
-          - Analyze implications
-          - Identify patterns and anomalies
-          - Suggest advanced optimizations
-          - Mention potential risks
-          - Provide deep technical insights
-        `;
-      }
-  
-      const prompt = `
-        ${personality}
-  
-        Analyze this Base transaction:
+        const systemPrompt = `You are analyzing a single specific Ethereum transaction.
+        Focus ONLY on these transaction details:
         ${JSON.stringify(txData, null, 2)}
-  
-        Key points to cover as relevant:
-        - Transaction nature and impact
-        - Costs and efficiency
-        - Smart contract/protocol interactions
-        - Risks or points of attention
-        - Optimization suggestions
-        - Broader context if relevant
-  
-        Maintain a natural tone while staying true to your personality.
-        Use emojis sparingly for readability.
-        Focus on what's most relevant for the user's level (${userLevel}/100).
-      `;
-  
-      const response = await this.agent.invoke({
-        input: prompt
-      });
-  
-      return typeof response === 'string' ? response : response.output;
-  
+
+        User knowledge level: ${userLevel}/100
+
+        PROVIDE:
+        1. A single ${userLevel < 30 ? 'simple' : userLevel < 70 ? 'technical' : 'expert'} explanation
+        2. ONLY describe what THIS SPECIFIC transaction does
+        3. Base your analysis on the actual data provided above
+        4. Max 3 sentences
+
+        DO NOT:
+        - Ask for more information
+        - Give generic responses
+        - Talk about risks or recommendations
+        - Add greetings or default responses
+
+        IMPORTANT: Use the real transaction data to explain what happened.`;
+
+        // Créer les messages pour le LLM
+        const messages = [
+            new SystemMessage(systemPrompt),
+            new HumanMessage("Analyze this transaction.")
+        ];
+
+        // Appeler directement le LLM
+        const response = await this.llm.invoke(messages);
+
+        let content: string;
+        if (typeof response.content === 'string') {
+            content = response.content;
+        } else if (Array.isArray(response.content)) {
+            content = response.content.map(item => 
+                typeof item === 'string' ? item : JSON.stringify(item)
+            ).join(' ');
+        } else {
+            content = JSON.stringify(response.content);
+        }
+
+        return content;
+
     } catch (error) {
-      console.error('Error generating explanation:', error);
-      return 'Sorry, an error occurred while generating the explanation.';
+        console.error('Error generating explanation:', error);
+        return `Error analyzing transaction: ${error instanceof Error ? error.message : 'Unknown error'}`;
     }
   }
 

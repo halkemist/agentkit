@@ -45,25 +45,16 @@ async function testAnalysis() {
     return;
   }
 
-  // 1. Initialiser le LLM
+  // Initialiser le LLM
   const llm = new ChatOpenAI({
-    modelName: "gpt-3.5-turbo",
-    temperature: 0.7,
-    maxRetries: 5,
-    maxConcurrency: 1
+    modelName: "gpt-4o-mini",
+    temperature: 0.1,
+    maxRetries: 3,
+    cache: false,
+    streaming: false
   });
 
-  // 2. Créer l'agent React
-  const agent = createReactAgent({
-    llm,
-    tools: [], // Pas besoin d'outils supplémentaires pour ce test
-    messageModifier: `
-      You are a blockchain transaction analysis expert. Analyze the transaction data and provide insights 
-      based on the user's expertise level. Use technical terms for high levels and simple explanations for beginners.
-    `
-  });
-
-  // 3. Initialiser le provider
+  // Initialiser le provider
   const provider = transactionAnalysisProvider({
     basescanApiKey: process.env.BASESCAN_API_KEY,
     rpcUrl: process.env.BASE_RPC_URL,
@@ -71,15 +62,15 @@ async function testAnalysis() {
     apiKey: process.env.BACKEND_API_KEY
   });
 
-  // 4. Important: Définir l'agent complet
-  provider.setAgent(agent);
+  // Important: Définir le modèle llm
+  provider.setLLM(llm);
 
   try {
-    // 5. Obtenir une transaction récente
+    // Obtenir une transaction récente
     const txHash = await getRecentTransaction();
     console.log(`\nTesting with transaction: ${txHash}`);
 
-    // 6. Tester les différents niveaux d'utilisateur
+    // Tester les différents niveaux d'utilisateur
     const userLevels = [1, 30, 80]; // Débutant, Intermédiaire, Avancé
     
     for (const level of userLevels) {
@@ -97,16 +88,6 @@ async function testAnalysis() {
       // Petite pause entre les tests
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
-
-    // 7. Tester le cache
-    console.log('\n🔄 Testing cached response:');
-    console.log('----------------------------------------');
-    const cachedAnalysis = await provider.analyzeTransaction({
-      txHash,
-      userLevel: 1,
-      isNewTransaction: false
-    });
-    console.log(cachedAnalysis);
 
   } catch (error) {
     console.error('❌ Test failed:', error);
