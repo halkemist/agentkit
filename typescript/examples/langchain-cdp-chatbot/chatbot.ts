@@ -110,8 +110,9 @@ async function initializeAgent() {
         }),
         transactionAnalysisProvider({
           basescanApiKey: process.env.BASESCAN_API_KEY,
+          rpcUrl: process.env.BASE_RPC_URL,
           apiKey: process.env.BACKEND_API_KEY,
-          apiUrl: process.env.BACKEND_API_URL
+          apiUrl: process.env.BACKEND_API_URL,
         })
       ],
     });

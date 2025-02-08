@@ -14,7 +14,6 @@ interface TransactionRisk {
 interface TransactionConfig {
   basescanApiKey: string;
   rpcUrl: string;
-  scamDatabaseUrl?: string;
   supportedNetworks?: Network[];
   apiUrl?: string,
   apiKey?: any
@@ -74,7 +73,6 @@ export class TransactionAnalysisProvider extends ActionProvider {
   private lastKnownTx: Record<string, string>;
   private readonly basescanApiKey: string;
   private readonly provider: ethers.JsonRpcProvider;
-  private readonly scamDatabaseUrl?: string;
   private readonly supportedNetworks: Network[];
   private readonly apiUrl: string;
   private readonly apiKey: string;
@@ -97,7 +95,6 @@ export class TransactionAnalysisProvider extends ActionProvider {
     this.lastKnownTx = {};
     this.basescanApiKey = config.basescanApiKey;
     this.provider = new ethers.JsonRpcProvider(config.rpcUrl);
-    this.scamDatabaseUrl = config.scamDatabaseUrl;
     this.supportedNetworks = config.supportedNetworks || [
       { 
           protocolFamily: 'base',
@@ -238,17 +235,6 @@ export class TransactionAnalysisProvider extends ActionProvider {
     }
   }
 
-  private async checkAgainstScamDatabase(address: string): Promise<boolean> {
-    if (!this.scamDatabaseUrl) return false;
-    try {
-      const response = await fetch(`${this.scamDatabaseUrl}/${address}`);
-      const data = await response.json();
-      return data.isScam || false;
-    } catch {
-      return false;
-    }
-  }
-
   private determineTransactionType(tx: ethers.TransactionResponse): string {
     if (!tx.data || tx.data === '0x') return 'ETH Transfer';
     if (tx.data.startsWith('0xa9059cbb')) return 'ERC20 Transfer';
@@ -285,20 +271,10 @@ export class TransactionAnalysisProvider extends ActionProvider {
         highValue: valueInEth > 1, // Transaction > 1 ETH
         unusualGas: gasUsed > (gasLimit * BigInt(8)) / BigInt(10), // Use of more than 80% of gas limit
         newContract: tx.to ? !(await this.isVerifiedContract(tx.to)) : true,
-        knownScam: tx.to ? await this.checkAgainstScamDatabase(tx.to) : false,
         failedTx: receipt.status === 0,
         complexData: tx.data && tx.data.length > 138, // Complex data (simple than transfer)
         highGasPrice: tx.gasPrice > ethers.parseUnits("100", "gwei") // Gas price > 100 gwei
       };
-  
-      // Annalyze critical risks
-      if (riskFactors.knownScam) {
-        return {
-          riskLevel: 'danger',
-          reason: '🚨 Cette adresse est signalée comme malveillante dans notre base de données!',
-          recommendation: 'Annulez immédiatement toute transaction avec cette adresse et signalez-la à votre communauté.'
-        };
-      }
   
       if (riskFactors.failedTx) {
         return {
@@ -542,7 +518,8 @@ export const transactionAnalysisProvider = (config: Partial<TransactionConfig> =
   const defaultConfig: TransactionConfig = {
     basescanApiKey: process.env.BASESCAN_API_KEY || '',
     rpcUrl: process.env.BASE_RPC_URL || 'https://mainnet.base.org',
-    scamDatabaseUrl: process.env.SCAM_DATABASE_URL,
+    apiUrl: process.env.BACKEND_API_URL,
+    apiKey: process.env.BACKEND_API_KEY,
     supportedNetworks: [{
       protocolFamily: 'base',
       networkId: 'base-mainnet',
