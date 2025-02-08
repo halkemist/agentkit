@@ -21,6 +21,14 @@ interface TransactionConfig {
   apiKey?: any
 }
 
+interface UserSession {
+  intervalId: NodeJS.Timeout;
+  lastCheckedBlock: number;
+  isActive: boolean;
+  lastUpdate: number;
+  pendingTransactions: Set<string>;
+}
+
 // Types (user level)
 interface UserProgress {
   address: string;
@@ -79,6 +87,7 @@ export class TransactionAnalysisProvider extends ActionProvider {
   private readonly apiUrl: string;
   private readonly apiKey: string;
   private llm?: ChatOpenAI;
+  private userSessions: Map<string, UserSession>;
 
   // Level variables
   private readonly XP_ACTIONS: Record<string, XPEvent> = {
@@ -107,6 +116,8 @@ export class TransactionAnalysisProvider extends ActionProvider {
     ];
     this.apiUrl = config.apiUrl || 'http://localhost:3000';
     this.apiKey = config.apiKey;
+    this.userSessions = new Map();
+    this.cleanupInactiveSessions();
   }
 
   public setLLM(llm: ChatOpenAI) {
@@ -121,57 +132,202 @@ export class TransactionAnalysisProvider extends ActionProvider {
     );
   }
 
-  private async getLatestTransaction(address: string): Promise<ethers.TransactionResponse | null> {
-    try {
-        // Use API go get address tx history
-        const baseUrl = "https://api.basescan.org/api";
-        const response = await fetch(
-            `${baseUrl}?module=account&action=txlist&address=${address}&sort=desc&apikey=${this.basescanApiKey}&limit=1`
-        );
-        
-        const data = await response.json();
-        
-        if (data.status === "1" && data.result.length > 0) {
-            const tx = await this.provider.getTransaction(data.result[0].hash);
-            return tx;
-        }
-        
-        return null;
-    } catch (error) {
-        console.error('Error fetching latest transaction:', error);
-        return null;
-    }
-  }
+  
+
+  // NEW
 
   @CreateAction({
     name: "monitor_address",
     description: "Monitors an address for new transactions and provides real-time analysis",
     schema: MonitorAddressSchema
   })
+  
   async monitorAddress(args: z.infer<typeof MonitorAddressSchema>): Promise<string> {
     const { userAddress, currentLevel } = args;
 
     try {
-      const latestTx = await this.getLatestTransaction(userAddress);
-      
-      if (!latestTx) {
-        return "No transactions found for this address.";
-      }
+        const existingSession = this.userSessions.get(userAddress);
+        if (existingSession?.isActive) {
+            return `Already monitoring address ${userAddress}`;
+        }
 
-      if (latestTx.hash !== this.lastKnownTx[userAddress]) {
-        this.lastKnownTx[userAddress] = latestTx.hash;
+        let lastCheckedBlock = await this.provider.getBlockNumber();
         
-        return await this.analyzeTransaction({
-          txHash: latestTx.hash,
-          userLevel: currentLevel,
-          isNewTransaction: true
-        });
-      }
+        const intervalId: NodeJS.Timeout = setInterval(async () => {
+            try {
+                const session = this.userSessions.get(userAddress);
+                if (!session || !session.isActive) {
+                    clearInterval(intervalId);
+                    return;
+                }
 
-      return "No new transactions.";
+                const currentBlock = await this.provider.getBlockNumber();
+                
+                if (currentBlock > session.lastCheckedBlock) {
+                    const txs = await this.getTransactionsSince(userAddress, session.lastCheckedBlock);
+                    
+                    // Pour chaque nouvelle transaction
+                    for (const tx of txs) {
+                        if (!tx || session.pendingTransactions.has(tx.hash)) continue;
+                        
+                        // Ajouter à la liste des transactions en cours
+                        session.pendingTransactions.add(tx.hash);
+                        
+                        // Utiliser processTransaction au lieu du traitement direct
+                        this.processTransaction(tx, userAddress, currentLevel)
+                            .finally(() => {
+                                // Retirer de la liste une fois terminé
+                                session.pendingTransactions.delete(tx.hash);
+                            });
+                    }
+                    
+                    session.lastCheckedBlock = currentBlock;
+                    session.lastUpdate = Date.now();
+                    this.userSessions.set(userAddress, session);
+                }
+            } catch (error) {
+                console.error('Error in monitoring interval:', error);
+            }
+        }, 30000);
+
+        this.userSessions.set(userAddress, {
+            intervalId,
+            lastCheckedBlock,
+            isActive: true,
+            lastUpdate: Date.now(),
+            pendingTransactions: new Set()
+        });
+        
+        return `Started monitoring address ${userAddress}`;
+
     } catch (error) {
-      return `Error monitoring address: ${error instanceof Error ? error.message : 'Unknown error'}`;
+        return `Error monitoring address: ${error instanceof Error ? error.message : 'Unknown error'}`;
     }
+  }
+
+  // Nouvelle méthode de traitement des transactions
+  private async processTransaction(
+      tx: ethers.TransactionResponse,
+      userAddress: string,
+      currentLevel: number
+  ): Promise<void> {
+      try {
+          console.log('Processing transaction:', tx.hash);
+
+          const receipt = await this.provider.getTransactionReceipt(tx.hash);
+          if (!receipt) return;
+
+          const [riskAnalysis, explanation] = await Promise.all([
+              this.assessTransactionRisk(tx, receipt),
+              this.generateLevelAppropriateExplanation(tx, receipt, currentLevel)
+          ]);
+
+          await this.retryOperation(() => 
+              fetch(`${this.apiUrl}/explanation`, {
+                  method: 'POST',
+                  headers: {
+                      'Content-Type': 'application/json',
+                      'x-api-key': this.apiKey
+                  },
+                  body: JSON.stringify({
+                      transactionHash: tx.hash,
+                      userLevel: currentLevel,
+                      explanation,
+                      riskAnalysis: this.formatRiskAlert(riskAnalysis),
+                      userAddress
+                  })
+              })
+          );
+
+          await this.updateUserProgress({
+              userAddress,
+              action: 'TRANSACTION_ANALYZED',
+              context: {
+                  transactionHash: tx.hash,
+                  complexity: await this.calculateTransactionComplexity(tx.hash)
+              }
+          });
+
+      } catch (error) {
+          console.error(`Error processing transaction ${tx.hash}:`, error);
+      }
+  }
+
+  // Méthode utilitaire pour les retries
+  private async retryOperation<T>(
+      operation: () => Promise<T>,
+      maxRetries = 3,
+      delay = 1000
+  ): Promise<T> {
+      let lastError;
+      
+      for (let i = 0; i < maxRetries; i++) {
+          try {
+              return await operation();
+          } catch (error) {
+              lastError = error;
+              await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, i)));
+          }
+      }
+      
+      throw lastError;
+  }
+
+  // Méthode de nettoyage des sessions
+  private cleanupInactiveSessions(): void {
+      setInterval(() => {
+          const now = Date.now();
+          for (const [address, session] of this.userSessions) {
+              if (!session.isActive && (now - session.lastUpdate > 3600000)) {
+                  this.userSessions.delete(address);
+              }
+          }
+      }, 3600000);
+  }
+
+  // Mise à jour de la méthode stopMonitoring
+  @CreateAction({
+      name: "stop_monitoring",
+      description: "Stops monitoring an address",
+      schema: z.object({
+          userAddress: z.string().describe("Address to stop monitoring")
+      })
+  })
+  async stopMonitoring(args: { userAddress: string }): Promise<string> {
+      const { userAddress } = args;
+      
+      const session = this.userSessions.get(userAddress);
+      if (session?.isActive) {
+          clearInterval(session.intervalId);
+          session.isActive = false;
+          this.userSessions.set(userAddress, session);
+          return `Stopped monitoring address ${userAddress}`;
+      }
+      
+      return `Not monitoring address ${userAddress}`;
+  }
+
+  // NEW
+  
+  private async getTransactionsSince(address: string, fromBlock: number): Promise<ethers.TransactionResponse[]> {
+    const currentBlock = await this.provider.getBlockNumber();
+    
+    // Get txs via Basescan API
+    const baseUrl = "https://api.basescan.org/api";
+    const response = await fetch(
+      `${baseUrl}?module=account&action=txlist&address=${address}&startblock=${fromBlock}&endblock=${currentBlock}&sort=asc&apikey=${this.basescanApiKey}`
+    );
+    
+    const data = await response.json();
+    if (data.status === "1" && data.result.length > 0) {
+      // Get full tx details
+      const txs = await Promise.all(
+        data.result.map((tx: any) => this.provider.getTransaction(tx.hash))
+      );
+      return txs.filter((tx): tx is ethers.TransactionResponse => tx !== null);
+    }
+    
+    return [];
   }
 
   @CreateAction({
@@ -415,6 +571,7 @@ export class TransactionAnalysisProvider extends ActionProvider {
     description: "Updates user XP and level based on their actions",
     schema: UpdateUserProgressSchema
   })
+
   async updateUserProgress(args: z.infer<typeof UpdateUserProgressSchema>): Promise<UserProgress> {
     const { userAddress, action, context } = args;
     const userProgress = await this.getUserProgress(userAddress);
