@@ -76,6 +76,7 @@ export class TransactionAnalysisProvider extends ActionProvider {
   private readonly supportedNetworks: Network[];
   private readonly apiUrl: string;
   private readonly apiKey: string;
+  private agent: any = null;
 
   // Level variables
   private readonly XP_ACTIONS: Record<string, XPEvent> = {
@@ -104,6 +105,10 @@ export class TransactionAnalysisProvider extends ActionProvider {
     ];
     this.apiUrl = config.apiUrl || 'http://localhost:3000';
     this.apiKey = config.apiKey;
+  }
+
+  setAgent(newAgent: any): void {
+    this.agent = newAgent;
   }
 
   supportsNetwork(network: Network): boolean {
@@ -279,8 +284,8 @@ export class TransactionAnalysisProvider extends ActionProvider {
       if (riskFactors.failedTx) {
         return {
           riskLevel: 'warning',
-          reason: '⚠️ La transaction a échoué',
-          recommendation: 'Vérifiez les paramètres de la transaction et le solde de votre compte avant de réessayer.'
+          reason: '⚠️ Transaction failed',
+          recommendation: 'Check transaction parameters and account balance before retrying.'
         };
       }
   
@@ -288,39 +293,39 @@ export class TransactionAnalysisProvider extends ActionProvider {
       if (riskFactors.highValue && riskFactors.newContract) {
         return {
           riskLevel: 'danger',
-          reason: '🚨 Transaction de valeur élevée avec un contrat non vérifié',
-          recommendation: 'Vérifiez attentivement le contrat et ses audits avant de procéder. Considérez faire une transaction test avec un petit montant.'
+          reason: '🚨 High value transaction with unverified contract',
+          recommendation: 'Carefully verify the contract and its audits before proceeding. Consider testing with a smaller amount first.'
         };
       }
   
       if (riskFactors.unusualGas && riskFactors.complexData) {
         return {
           riskLevel: 'warning',
-          reason: '⚠️ Transaction complexe avec une utilisation élevée de gas',
-          recommendation: 'Vérifiez que vous comprenez toutes les actions que cette transaction va effectuer.'
+          reason: '⚠️ Complex transaction with high gas usage',
+          recommendation: 'Make sure you understand all actions this transaction will perform.'
         };
       }
   
       if (riskFactors.highGasPrice) {
         return {
           riskLevel: 'warning',
-          reason: '⚠️ Prix du gas inhabituellement élevé',
-          recommendation: 'Considérez attendre que le prix du gas baisse pour effectuer cette transaction.'
+          reason: '⚠️ Unusually high gas price',
+          recommendation: 'Consider waiting for gas prices to decrease before making this transaction.'
         };
       }
   
       // Standard transaction
       return {
         riskLevel: 'safe',
-        reason: '✅ Transaction standard sans risques particuliers détectés',
-        recommendation: 'Vous pouvez procéder avec confiance.'
+        reason: '✅ Standard transaction with no particular risks detected',
+        recommendation: 'You can proceed with confidence.'
       };
     } catch (error) {
       console.error('Error in risk assessment:', error);
       return {
         riskLevel: 'warning',
-        reason: '⚠️ Impossible d\'effectuer une analyse complète des risques',
-        recommendation: 'Procédez avec prudence et vérifiez tous les paramètres.'
+        reason: '⚠️ Unable to perform complete risk analysis',
+        recommendation: 'Proceed with caution and verify all parameters.'
       };
     }
   }
@@ -328,77 +333,88 @@ export class TransactionAnalysisProvider extends ActionProvider {
   private async generateLevelAppropriateExplanation(
     tx: ethers.TransactionResponse,
     receipt: ethers.TransactionReceipt,
-    userLevel: number
+    userLevel: number,
   ): Promise<string> {
     try {
-      const valueInEth = ethers.formatEther(tx.value);
-      const gasCost = tx.gasPrice * receipt.gasUsed;
-      const gasCostInEth = gasCost ? ethers.formatEther(gasCost) : '0';
-      const txType = this.determineTransactionType(tx);
+
+      if (!this.agent) {
+        throw new Error("Agent not initialized");
+      }
+
+      // Prepare transaction data
+      const txData = {
+        value: ethers.formatEther(tx.value),
+        gasCost: ethers.formatEther(tx.gasPrice * receipt.gasUsed),
+        status: receipt.status,
+        to: tx.to,
+        from: tx.from,
+        hash: tx.hash,
+        input: tx.data,
+        gasUsed: receipt.gasUsed.toString(),
+        events: receipt.logs,
+        type: this.determineTransactionType(tx)
+      };
   
-      // Beginner level (1-20)
+      // Define personality based on level
+      let personality;
       if (userLevel <= 20) {
-        let explanation = `
-          📝 Explication Simple:
-          
-          ${tx.value > BigInt(0) 
-            ? `- Vous avez envoyé ${valueInEth} ETH`
-            : `- Vous avez interagi avec ${tx.to ? 'une application' : 'un nouveau contrat'}`
-          }
-          
-          - La transaction est ${receipt.status ? 'réussie ✅' : 'échouée ❌'}
-          - Frais payés: ${gasCostInEth} ETH
-          
-          ${receipt.status ? '👍 Tout s\'est bien passé!' : '😕 Quelque chose n\'a pas fonctionné.'}
+        personality = `
+          You are a friendly and reassuring blockchain guide who explains things simply.
+          - Use simple and accessible metaphors
+          - Avoid technical jargon
+          - Stay positive and encouraging
+          - Explain as if to a friend discovering blockchain
+          - Focus on essential outcomes
         `;
-        return explanation;
+      } else if (userLevel <= 60) {
+        personality = `
+          You are a pragmatic technical mentor.
+          - Balance technical details and accessibility
+          - Provide practical explanations
+          - Make connections with familiar concepts
+          - Give basic optimization tips
+          - Highlight important technical aspects
+        `;
+      } else {
+        personality = `
+          You are a sharp technical expert speaking to another expert.
+          - Dive into technical details
+          - Analyze implications
+          - Identify patterns and anomalies
+          - Suggest advanced optimizations
+          - Mention potential risks
+          - Provide deep technical insights
+        `;
       }
   
-      // Intermediate level (21-60)
-      if (userLevel <= 60) {
-        let explanation = `
-          🔍 Détails de la Transaction:
-          
-          - Type: ${txType}
-          - Montant: ${valueInEth} ETH
-          - Destinataire: ${tx.to || 'Création de contrat'}
-          - Gas utilisé: ${receipt.gasUsed.toString()} unités
-          - Coût total: ${gasCostInEth} ETH
-          - Status: ${receipt.status ? 'Succès' : 'Échec'}
-          
-          ${tx.data !== '0x' ? '🤖 Cette transaction a interagi avec un smart contract.' : ''}
-        `;
-        return explanation;
-      }
+      const prompt = `
+        ${personality}
   
-      // Advanced level (61-100)
-      return `
-        🔬 Analyse Technique Détaillée:
-        
-        Transaction:
-        - Hash: ${tx.hash}
-        - Block: ${tx.blockNumber}
-        - Nonce: ${tx.nonce}
-        - From: ${tx.from}
-        - To: ${tx.to || 'Contract Creation'}
-        - Value: ${valueInEth} ETH
-        
-        Gas:
-        - Limite: ${tx.gasLimit.toString()}
-        - Utilisé: ${receipt.gasUsed.toString()} (${(receipt.gasUsed * 100n / tx.gasLimit).toString()}%)
-        - Prix: ${ethers.formatUnits(tx.gasPrice || 0, 'gwei')} Gwei
-        - Coût Total: ${gasCostInEth} ETH
-        
-        Données:
-        - Input: ${tx.data}
-        ${tx.data !== '0x' ? `- Function: ${tx.data.slice(0, 10)}` : ''}
-        
-        Événements émis:
-        ${this.formatEvents(receipt.logs)}
+        Analyze this Base transaction:
+        ${JSON.stringify(txData, null, 2)}
+  
+        Key points to cover as relevant:
+        - Transaction nature and impact
+        - Costs and efficiency
+        - Smart contract/protocol interactions
+        - Risks or points of attention
+        - Optimization suggestions
+        - Broader context if relevant
+  
+        Maintain a natural tone while staying true to your personality.
+        Use emojis sparingly for readability.
+        Focus on what's most relevant for the user's level (${userLevel}/100).
       `;
+  
+      const response = await this.agent.invoke({
+        input: prompt
+      });
+  
+      return typeof response === 'string' ? response : response.output;
+  
     } catch (error) {
       console.error('Error generating explanation:', error);
-      return 'Désolé, une erreur est survenue lors de la génération de l\'explication.';
+      return 'Sorry, an error occurred while generating the explanation.';
     }
   }
 
@@ -480,7 +496,7 @@ export class TransactionAnalysisProvider extends ActionProvider {
   private async checkAchievements(progress: UserProgress, context?: any): Promise<Achievement[]> {
     const newAchievements: Achievement[] = [];
 
-    // Achievement example
+    // First transaction analysis
     if (progress.transactionsAnalyzed === 1) {
       newAchievements.push({
         id: 'FIRST_ANALYSIS',
@@ -491,7 +507,110 @@ export class TransactionAnalysisProvider extends ActionProvider {
       });
     }
 
-    // TODO: add others achievements conditions here
+    // Transaction milestone achievements
+    if (progress.transactionsAnalyzed === 10) {
+      newAchievements.push({
+        id: 'TRANSACTION_EXPLORER',
+        name: 'Transaction Explorer',
+        description: 'Analyzed 10 transactions',
+        xpReward: 250,
+        dateUnlocked: Date.now()
+      });
+    }
+
+    if (progress.transactionsAnalyzed === 100) {
+      newAchievements.push({
+        id: 'BLOCKCHAIN_DETECTIVE',
+        name: 'Blockchain Detective',
+        description: 'Analyzed 100 transactions',
+        xpReward: 1000,
+        dateUnlocked: Date.now()
+      });
+    }
+
+    // Level-based achievements
+    if (progress.level === 10) {
+      newAchievements.push({
+        id: 'RISING_ANALYST',
+        name: 'Rising Analyst',
+        description: 'Reached level 10',
+        xpReward: 500,
+        dateUnlocked: Date.now()
+      });
+    }
+
+    if (progress.level === 50) {
+      newAchievements.push({
+        id: 'EXPERT_ANALYST',
+        name: 'Expert Analyst',
+        description: 'Reached level 50',
+        xpReward: 2000,
+        dateUnlocked: Date.now()
+      });
+    }
+
+    // Transaction type achievements
+    if (context?.complexTransaction) {
+      newAchievements.push({
+        id: 'COMPLEXITY_MASTER',
+        name: 'Complexity Master',
+        description: 'Analyzed a complex smart contract interaction',
+        xpReward: 300,
+        dateUnlocked: Date.now()
+      });
+    }
+
+    if (context?.highValueTransaction) {
+      newAchievements.push({
+        id: 'WHALE_WATCHER',
+        name: 'Whale Watcher',
+        description: 'Analyzed a high-value transaction (>1 ETH)',
+        xpReward: 400,
+        dateUnlocked: Date.now()
+      });
+    }
+
+    // Risk analysis achievements
+    if (context?.riskLevel === 'danger' && progress.level >= 30) {
+      newAchievements.push({
+        id: 'RISK_DETECTOR',
+        name: 'Risk Detector',
+        description: 'Successfully identified a high-risk transaction',
+        xpReward: 350,
+        dateUnlocked: Date.now()
+      });
+    }
+
+    // Special achievements
+    if (context?.consecutiveDays >= 7) {
+      newAchievements.push({
+        id: 'DEDICATED_ANALYST',
+        name: 'Dedicated Analyst',
+        description: 'Analyzed transactions for 7 consecutive days',
+        xpReward: 700,
+        dateUnlocked: Date.now()
+      });
+    }
+
+    if (context?.uniqueContracts >= 10) {
+      newAchievements.push({
+        id: 'CONTRACT_CONNOISSEUR',
+        name: 'Contract Connoisseur',
+        description: 'Analyzed transactions involving 10 different smart contracts',
+        xpReward: 600,
+        dateUnlocked: Date.now()
+      });
+    }
+
+    if (context?.defiInteraction) {
+      newAchievements.push({
+        id: 'DEFI_EXPLORER',
+        name: 'DeFi Explorer',
+        description: 'Analyzed your first DeFi protocol interaction',
+        xpReward: 450,
+        dateUnlocked: Date.now()
+      });
+    }
 
     return newAchievements;
   }

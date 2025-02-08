@@ -67,7 +67,7 @@ async function initializeAgent() {
   try {
     // Initialize LLM
     const llm = new ChatOpenAI({
-      model: "gpt-4o-mini",
+      model: "gpt-3.5-turbo",
     });
 
     let walletDataStr: string | null = null;
@@ -92,6 +92,8 @@ async function initializeAgent() {
 
     const walletProvider = await CdpWalletProvider.configureWithWallet(config);
 
+    let transactionAnalysisProviderInstance: any;
+
     // Initialize AgentKit
     const agentkit = await AgentKit.from({
       walletProvider,
@@ -108,12 +110,12 @@ async function initializeAgent() {
           apiKeyName: process.env.CDP_API_KEY_NAME,
           apiKeyPrivateKey: process.env.CDP_API_KEY_PRIVATE_KEY?.replace(/\\n/g, "\n"),
         }),
-        transactionAnalysisProvider({
+        (transactionAnalysisProviderInstance = transactionAnalysisProvider({
           basescanApiKey: process.env.BASESCAN_API_KEY,
           rpcUrl: process.env.BASE_RPC_URL,
           apiKey: process.env.BACKEND_API_KEY,
           apiUrl: process.env.BACKEND_API_URL,
-        })
+        }))
       ],
     });
 
@@ -129,17 +131,39 @@ async function initializeAgent() {
       tools,
       checkpointSaver: memory,
       messageModifier: `
-        You are a helpful agent that can interact onchain using the Coinbase Developer Platform AgentKit. You are 
-        empowered to interact onchain using your tools. If you ever need funds, you can request them from the 
-        faucet if you are on network ID 'base-sepolia'. If not, you can provide your wallet details and request 
-        funds from the user. Before executing your first action, get the wallet details to see what network 
-        you're on. If there is a 5XX (internal) HTTP error code, ask the user to try again later. If someone 
-        asks you to do something you can't do with your currently available tools, you must say so, and 
-        encourage them to implement it themselves using the CDP SDK + Agentkit, recommend they go to 
-        docs.cdp.coinbase.com for more information. Be concise and helpful with your responses. Refrain from 
-        restating your tools' descriptions unless it is explicitly requested.
+        You are a specialized blockchain transaction analyst using Coinbase Developer Platform AgentKit. Your main role is to analyze blockchain transactions and present the information in a way that matches the user's expertise level.
+
+        Key responsibilities:
+        - Analyze transactions based on userLevel (1=beginner, 30=intermediate, 80=expert)
+        - Provide clear risk assessments
+        - Detect and warn about suspicious patterns
+        - Cache analysis results for efficiency
+
+        Response formatting:
+        - Level 1 (Beginner): Simple, reassuring explanations focusing on success/failure and costs
+        - Level 30 (Intermediate): Technical details with balanced explanations
+        - Level 80 (Expert): Comprehensive technical analysis including raw data
+
+        Guidelines:
+        - Always include a risk assessment level (SAFE, CAUTION, WARNING)
+        - Use emojis for better readability
+        - Structure responses in clear sections
+        - If encountering 5XX errors, ask user to retry later
+        - For unsupported features, direct users to docs.cdp.coinbase.com
+
+        Network handling:
+        - Support Base mainnet and Base Sepolia
+        - If RPC connection fails, provide clear error message
+        - Verify transaction exists before analysis
+
+        Never expose sensitive information or API keys in responses.
+        Be concise yet informative based on user level.
         `,
     });
+
+    if (transactionAnalysisProviderInstance.setAgent) {
+      transactionAnalysisProviderInstance.setAgent(agent);
+    }
 
     // Save wallet data
     const exportedWallet = await walletProvider.exportWallet();
