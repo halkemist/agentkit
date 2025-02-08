@@ -187,10 +187,26 @@ export class TransactionAnalysisProvider extends ActionProvider {
 
         const riskAnalysis = await this.assessTransactionRisk(tx, receipt);
         const explanation = await this.generateLevelAppropriateExplanation(tx, receipt, userLevel);
+
+        // Save explanation in DB
+        await fetch(`${this.apiUrl}/explanation`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': this.apiKey
+          },
+          body: JSON.stringify({
+            transactionHash: txHash,
+            userLevel,
+            explanation,
+            riskAnalysis: this.formatRiskAlert(riskAnalysis),
+            userAddress: tx.from
+          })
+        });
         
         // Update user progression
         await this.updateUserProgress({
-            userAddress: tx.from, // Utilise l'adresse de l'émetteur de la transaction
+            userAddress: tx.from,
             action: 'TRANSACTION_ANALYZED',
             context: {
                 transactionHash: txHash,
